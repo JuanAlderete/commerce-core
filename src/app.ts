@@ -1,43 +1,65 @@
 import fastify from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import { appRoutes } from './routes';
-import { logger } from './shared/logger';
+import fastifyEnv from '@fastify/env';
+import { configOptions } from './shared/config/index.js';
+import { logger } from './shared/logger/index.js';
+import { appRoutes } from './routes.js';
+import fjwt from '@fastify/jwt';
 
-export function buildApp() {
+// Convertimos la función a async para asegurar el orden de carga (especialmente env)
+export async function buildApp() {
   const app = fastify({
-    logger: false, // We use our own logger instance
-    disableRequestLogging: true, // we can handle this manually if needed or let pino handle it, but standard is often to let fastify use a logger. However, we want strict control. Let's use our logger instance if we can or just use standard fastify logger injection. 
-    // "Configura una instancia global de Pino... en server.ts" -> usually passed to fastify. 
-    // Actually, user said: "Configura una instancia global de Pino en src/shared/logger."
-    // And "src/app.ts: Aquí configuras Fastify, registras los plugins...".
-    // I will attach our logger to fastify or simply use it globally. 
-    // Fastify has built-in pino support. It is better to use `logger: logger` here if compatible, or just keep them separate. 
-    // Given the "Global instance" requirement, I'll pass the logger instance to fastify so `req.log` works.
+    // 1. Inyección de Dependencia:
+    // Pasamos nuestra instancia configurada de Pino.
+    // Fastify la usará para sus logs internos y nos dará 'request.log' con request-id.
+    logger: logger,
+
+    // Opcional: Si los logs de "incoming request" te hacen mucho ruido, 
+    // puedes descomentar esto. Pero para empezar, déjalo activado.
+    // disableRequestLogging: true, 
   });
 
-  // Attach global logger
-  // Note: fastify logger option expects a pino instance or configuration.
-  // We will re-import logger in server.ts to start app.
-  
-  app.register(helmet);
-  app.register(rateLimit, {
+  // 2. Carga de Configuración (CRÍTICO: PRIMERO QUE TODO)
+  await app.register(fastifyEnv, configOptions);
+
+  // 3. Seguridad
+  await app.register(fjwt, {
+    secret: app.config.JWT_SECRET,
+  });
+  await app.register(helmet);
+
+  // 4. Rate Limiting (Protección contra DDoS/Brute Force)
+  await app.register(rateLimit, {
     max: 100,
     timeWindow: '1 minute',
   });
 
-  app.register(appRoutes);
+  // 5. Rutas de la Aplicación
+  await app.register(appRoutes);
 
+  // 6. Manejador Global de Errores
   app.setErrorHandler((error, request, reply) => {
-    logger.error({ err: error, reqId: request.id }, 'Global Error Handler');
-    
-    // Never leak internal errors
+    // Usamos request.log para mantener el contexto (requestId)
+    request.log.error({
+      err: error,
+      phase: 'global_error_handler',
+      url: request.url,
+      method: request.method
+    }, 'Uncaught Exception');
+
     const statusCode = error.statusCode || 500;
-    const message = statusCode === 500 ? 'Internal Server Error' : error.message;
+
+    // SECURITY: En producción (status 500), JAMÁS devolver el mensaje real del error
+    // porque puede contener info de la DB o paths del servidor.
+    const message = statusCode === 500
+      ? 'Internal Server Error'
+      : error.message;
 
     reply.status(statusCode).send({
       statusCode,
-      error: message, // Simplified error message
+      error: message,
+      // Opcional: timestamp: new Date().toISOString()
     });
   });
 

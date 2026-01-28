@@ -1,24 +1,31 @@
-import { db } from '../../shared/db';
-import { logger } from '../../shared/logger';
+import { sql } from 'kysely';
+import { db } from '../../shared/db/index.js';
 
 export class HealthService {
-  async check() {
+  async checkDatabase(): Promise<boolean> {
     try {
-      await db.query('SELECT 1');
-      return {
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        database: 'connected',
-      };
+      // Ejecutamos una query trivial para ver si la DB está viva
+      await sql`SELECT 1`.execute(db);
+      return true;
     } catch (error) {
-      logger.error(error, 'Health check failed');
-      return {
-        status: 'error',
-        timestamp: new Date().toISOString(),
-        database: 'disconnected',
-      };
+      return false;
     }
+  }
+
+  async getSystemStatus() {
+    const dbStatus = await this.checkDatabase();
+    
+    return {
+      service: 'commerce-core',
+      version: '0.1.0',
+      status: dbStatus ? 'operational' : 'degraded',
+      timestamp: new Date().toISOString(),
+      checks: {
+        database: dbStatus ? 'up' : 'down'
+      }
+    };
   }
 }
 
+// Exportamos una instancia única (Singleton) para ahorrar memoria
 export const healthService = new HealthService();

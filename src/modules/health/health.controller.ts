@@ -1,15 +1,15 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { healthService } from './health.service';
+import { healthService } from './health.service.js';
 
 export class HealthController {
   async check(request: FastifyRequest, reply: FastifyReply) {
-    const result = await healthService.check();
+    const status = await healthService.getSystemStatus();
     
-    if (result.status === 'error') {
-      reply.status(503);
-    }
+    // Si la base de datos está caída, devolvemos 503 (Service Unavailable)
+    // Esto es CRÍTICO para que los balanceadores de carga dejen de mandarnos tráfico.
+    const statusCode = status.status === 'operational' ? 200 : 503;
     
-    return result;
+    return reply.status(statusCode).send(status);
   }
 }
 
