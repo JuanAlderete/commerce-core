@@ -21,7 +21,10 @@ export class UserService {
       email,
       full_name,
       password_hash: passwordHash,
-      // role, created_at, etc. son default en DB
+      is_guest: false,
+      role: 'user',
+      created_at: new Date(),
+      updated_at: new Date(),
     });
 
     return {
@@ -94,6 +97,23 @@ export class UserService {
       full_name: user.full_name,
       role: user.role,
     };
+  }
+
+  async findOrCreateGuest(email: string, fullName: string = 'Guest User') {
+    const existingUser = await userRepository.findByEmail(email);
+    if (existingUser) {
+      return existingUser;
+    }
+
+    const newUser = await userRepository.create({
+      email,
+      full_name: fullName,
+      role: 'guest',
+      password_hash: null as any,
+      is_guest: true
+    });
+
+    return newUser;
   }
 }
 

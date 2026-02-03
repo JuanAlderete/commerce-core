@@ -4,12 +4,14 @@ import { logger } from '../logger/index.js';
 import { UserTable } from '../../modules/users/users.schema.js';
 import { CategoryTable } from '../../modules/categories/categories.schema.js';
 import { ProductTable } from '../../modules/products/products.schema.js';
+import { OrderTable, OrderItemTable } from '../../modules/orders/orders.schema.js';
 
-// Definimos una interfaz para la base de datos.
 export interface Database {
   users: UserTable;
   categories: CategoryTable;
   products: ProductTable;
+  orders: OrderTable;
+  order_items: OrderItemTable;
 }
 
 const { Pool } = pg;

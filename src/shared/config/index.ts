@@ -29,10 +29,10 @@ const schema = {
 
 // 2. Configuración del plugin
 export const configOptions = {
-  confKey: 'config', // Esto hará que config esté disponible en app.config
+  confKey: 'config',
   schema: schema,
-  dotenv: true, // Carga automáticamente el archivo .env
-  data: process.env // Lee las variables del proceso
+  dotenv: process.env.NODE_ENV !== 'test', 
+  data: process.env
 };
 
 // Tipado para TypeScript (Augmentation)

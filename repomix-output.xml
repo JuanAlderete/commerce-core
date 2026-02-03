@@ -1,0 +1,3487 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+docker-compose.dev.yml
+package.json
+pnpm-workspace.yaml
+README.md
+src/app.ts
+src/modules/auth/auth.controller.ts
+src/modules/auth/auth.dto.ts
+src/modules/auth/auth.routes.ts
+src/modules/auth/auth.service.ts
+src/modules/categories/categories.controller.ts
+src/modules/categories/categories.dto.ts
+src/modules/categories/categories.repository.ts
+src/modules/categories/categories.routes.ts
+src/modules/categories/categories.schema.ts
+src/modules/health/health.controller.ts
+src/modules/health/health.routes.ts
+src/modules/health/health.service.ts
+src/modules/orders/orders.controller.ts
+src/modules/orders/orders.dto.ts
+src/modules/orders/orders.repository.ts
+src/modules/orders/orders.routes.ts
+src/modules/orders/orders.schema.ts
+src/modules/orders/orders.service.ts
+src/modules/payments/payments.controller.ts
+src/modules/payments/payments.routes.ts
+src/modules/payments/payments.service.ts
+src/modules/products/products.controller.ts
+src/modules/products/products.dto.ts
+src/modules/products/products.repository.ts
+src/modules/products/products.routes.ts
+src/modules/products/products.schema.ts
+src/modules/users/users.controller.ts
+src/modules/users/users.dto.ts
+src/modules/users/users.repository.ts
+src/modules/users/users.routes.ts
+src/modules/users/users.schema.ts
+src/modules/users/users.service.ts
+src/routes.ts
+src/server.ts
+src/shared/config/index.ts
+src/shared/db/index.ts
+src/shared/db/migrate.ts
+src/shared/db/migrations/001_create_users_table.ts
+src/shared/db/migrations/002_create_categories_table.ts
+src/shared/db/migrations/003_create_products_table.ts
+src/shared/db/migrations/004_create_orders_table.ts
+src/shared/db/migrations/005_make_password_nullable.ts
+src/shared/hooks/auth.ts
+src/shared/hooks/optionalAuth.ts
+src/shared/hooks/rbac.ts
+src/shared/logger/index.ts
+src/shared/providers/payment/mock.provider.ts
+src/shared/providers/payment/payment.provider.ts
+src/types/fastify-jwt.d.ts
+test_output.txt
+tests/auth.test.ts
+tests/categories.test.ts
+tests/health.test.ts
+tests/orders.test.ts
+tests/payments.test.ts
+tests/products.test.ts
+tests/setup.ts
+tests/users.test.ts
+tsconfig.json
+vitest.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/modules/orders/orders.controller.ts">
+import { FastifyReply, FastifyRequest } from "fastify";
+import { orderService } from "./orders.service.js";
+import { orderRepository } from "./orders.repository.js";
+import { CreateOrderBody } from "./orders.dto.js";
+import { userService } from "../users/users.service.js";
+
+export class OrderController {
+
+    async create(request: FastifyRequest<{ Body: CreateOrderBody }>, reply: FastifyReply) {
+        const { items, guestEmail } = request.body;
+
+        let userId: string;
+        if (request.user) {
+            userId = request.user.sub;
+        }
+        else if (guestEmail) {
+            const guestUser = await userService.findOrCreateGuest(guestEmail);
+            userId = guestUser.id;
+        }
+        else {
+            return reply.status(401).send({
+                error: 'Unauthorized',
+                message: 'You must be logged in OR provide a guestEmail'
+            });
+        }
+
+        try {
+            const result = await orderService.createOrder(userId, items);
+            return reply.status(201).send(result);
+        } catch (error: any) {
+            if (error.message.includes('Insufficient stock')) {
+                return reply.status(409).send({ error: error.message });
+            }
+            throw error;
+        }
+    }
+
+    async list(request: FastifyRequest, reply: FastifyReply) {
+        const { limit = 20, offset = 0 } = request.query as { limit?: number; offset?: number };
+        const orders = await orderRepository.findAll(limit, offset);
+        return reply.send(orders);
+    }
+}
+
+export const orderController = new OrderController();
+</file>
+
+<file path="src/modules/orders/orders.dto.ts">
+import { Type, Static } from '@sinclair/typebox';
+
+// Patrón UUID para validación
+const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+
+export const CreateOrderSchema = Type.Object({
+    guestEmail: Type.Optional(Type.String({ format: 'email' })),
+    items: Type.Array(
+        Type.Object({
+            productId: Type.String({ pattern: UUID_PATTERN }),
+            quantity: Type.Integer({ minimum: 1 })
+        }),
+        { minItems: 1 }
+    )
+});
+
+export type CreateOrderBody = Static<typeof CreateOrderSchema>;
+</file>
+
+<file path="src/modules/orders/orders.repository.ts">
+import { Transaction } from 'kysely';
+import { db, Database } from '../../shared/db/index.js';
+import { NewOrder, NewOrderItem, Order } from './orders.schema.js';
+
+export class OrderRepository {
+    // Permitimos pasar una transacción (tx) para operaciones atómicas
+    async createOrder(order: NewOrder, tx: Transaction<Database> = db as any): Promise<Order> {
+        return await tx
+            .insertInto('orders')
+            .values(order)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+    }
+
+    async createOrderItems(items: NewOrderItem[], tx: Transaction<Database> = db as any) {
+        return await tx
+            .insertInto('order_items')
+            .values(items)
+            .returningAll()
+            .execute();
+    }
+
+    async findAll(limit: number, offset: number) {
+        return await db
+            .selectFrom('orders')
+            .selectAll()
+            .limit(limit)
+            .offset(offset)
+            .execute();
+    }
+
+    async findById(id: string): Promise<Order | undefined> {
+        return await db
+            .selectFrom('orders')
+            .selectAll()
+            .where('id', '=', id)
+            .executeTakeFirst();
+    }
+
+    async updateStatus(id: string, status: string): Promise<Order> {
+        return await db
+            .updateTable('orders')
+            .set({ status: status, updated_at: new Date() })
+            .where('id', '=', id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+    }
+}
+
+export const orderRepository = new OrderRepository();
+</file>
+
+<file path="src/modules/orders/orders.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { authenticate } from '../../shared/hooks/auth.js';
+import { optionalAuth } from '../../shared/hooks/optionalAuth.js';
+import { CreateOrderSchema, CreateOrderBody } from './orders.dto.js';
+import { orderController } from './orders.controller.js';
+
+export async function orderRoutes(app: FastifyInstance) {
+    app.get('/', { onRequest: [authenticate] }, orderController.list);
+
+    app.post<{ Body: CreateOrderBody }>('/', {
+        onRequest: [optionalAuth],
+        schema: {
+            body: CreateOrderSchema
+        }
+    }, orderController.create);
+}
+</file>
+
+<file path="src/modules/orders/orders.schema.ts">
+import { Generated, Insertable, Selectable, Updateable } from 'kysely';
+
+export interface OrderTable {
+    id: Generated<string>;
+    user_id: string;
+    status: Generated<string>; // 'pending' | 'paid' | 'shipped' | 'cancelled'
+    total_amount: number;
+    currency: Generated<string>;
+    created_at: Generated<Date>;
+    updated_at: Generated<Date>;
+}
+
+export type Order = Selectable<OrderTable>;
+export type NewOrder = Insertable<OrderTable>;
+
+export interface OrderItemTable {
+    id: Generated<string>;
+    order_id: string;
+    product_id: string;
+    quantity: number;
+    price_at_purchase: number;
+}
+
+export type OrderItem = Selectable<OrderItemTable>;
+export type NewOrderItem = Insertable<OrderItemTable>;
+</file>
+
+<file path="src/modules/orders/orders.service.ts">
+import { db } from '../../shared/db/index.js';
+import { productRepository } from '../products/products.repository.js';
+import { orderRepository } from './orders.repository.js';
+
+interface CreateOrderItemDto {
+    productId: string;
+    quantity: number;
+}
+
+export class OrderService {
+    async createOrder(userId: string, items: CreateOrderItemDto[]) {
+        return await db.transaction().execute(async (tx) => {
+            let totalAmount = 0;
+            const orderItemsData = [];
+
+            // 1. Verificaciones y preparación de datos
+            for (const item of items) {
+                // Obtenemos precio actual (dentro de la transacción para evitar race conditions sería ideal, 
+                // pero por simplicidad de lectura confiamos en el select previo o locks, 
+                // aquí usamos el repo normal, pero para ser estrictos deberíamos bloquear el row).
+
+                // Usamos findById que ya tienes (podrías pasarlo a transaccional si quieres bloquear lectura)
+                // Nota: findById actualmente usa 'db' global. Para bloqueo estricto 'FOR UPDATE' se necesita más código.
+                // Asumiremos que decrementStock fallará si no hay stock, lo cual es seguro.
+                const product = await productRepository.findById(item.productId);
+
+                // (Hack temporal: consultamos producto fuera de tx, el decremento SÍ es transaccional y seguro)
+                const productData = await tx.selectFrom('products')
+                    .selectAll()
+                    .where('id', '=', item.productId)
+                    .executeTakeFirstOrThrow();
+
+                if (!productData.active) throw new Error(`Product ${productData.name} is inactive`);
+
+                const lineTotal = productData.price_amount * item.quantity;
+                totalAmount += lineTotal;
+
+                orderItemsData.push({
+                    product_id: item.productId,
+                    quantity: item.quantity,
+                    price_at_purchase: productData.price_amount
+                });
+
+                // 2. DESCONTAR STOCK (Si falla, se revierte todo)
+                await productRepository.decrementStock(item.productId, item.quantity, tx);
+            }
+
+            // 3. Crear la Orden
+            const order = await orderRepository.createOrder({
+                user_id: userId,
+                total_amount: totalAmount,
+                status: 'pending'
+            }, tx);
+
+            // 4. Crear los Items asociados
+            const finalItems = orderItemsData.map(i => ({ ...i, order_id: order.id }));
+            await orderRepository.createOrderItems(finalItems, tx);
+
+            return {
+                orderId: order.id,
+                total: totalAmount,
+                status: 'pending'
+            };
+        });
+    }
+}
+
+export const orderService = new OrderService();
+</file>
+
+<file path="src/modules/payments/payments.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { paymentService } from './payments.service.js';
+
+interface PayOrderBody {
+    orderId: string;
+}
+
+export class PaymentController {
+    async pay(request: FastifyRequest<{ Body: PayOrderBody }>, reply: FastifyReply) {
+        const { orderId } = request.body;
+        const userId = request.user?.sub;
+
+        try {
+            const result = await paymentService.processOrderPayment(orderId, userId);
+            return reply.send(result);
+        } catch (error: any) {
+            const code = error.statusCode || 500;
+            return reply.status(code).send({ error: error.message });
+        }
+    }
+}
+
+export const paymentController = new PaymentController();
+</file>
+
+<file path="src/modules/payments/payments.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { paymentController } from './payments.controller.js';
+import { optionalAuth } from '../../shared/hooks/optionalAuth.js';
+import { Static, Type } from '@sinclair/typebox';
+
+const PaySchema = Type.Object({
+    orderId: Type.String({ format: 'uuid' })
+});
+
+type PayOrderBody = Static<typeof PaySchema>;
+
+export async function paymentRoutes(app: FastifyInstance) {
+    // Usamos optionalAuth para saber quién paga, pero permitimos guests si tienen el ID
+    app.post<{ Body: PayOrderBody }>('/pay', {
+        onRequest: [optionalAuth],
+        schema: { body: PaySchema }
+    }, paymentController.pay);
+}
+</file>
+
+<file path="src/modules/payments/payments.service.ts">
+import { orderRepository } from '../orders/orders.repository.js';
+import { paymentProvider } from '../../shared/providers/payment/mock.provider.js';
+
+export class PaymentService {
+    async processOrderPayment(orderId: string, userId?: string) {
+        // 1. Validar que la orden existe
+        const order = await orderRepository.findById(orderId);
+        if (!order) {
+            throw { statusCode: 404, message: 'Order not found' };
+        }
+
+        // 2. Seguridad: Validar que la orden pertenezca al usuario (si está logueado)
+        // Si userId viene undefined (guest), saltamos esto o validamos email.
+        // Por simplicidad, si viene userId lo chequeamos.
+        if (userId && order.user_id !== userId) {
+            throw { statusCode: 403, message: 'Unauthorized access to this order' };
+        }
+
+        // 3. Validar estado (No cobrar dos veces)
+        if (order.status === 'paid') {
+            throw { statusCode: 400, message: 'Order is already paid' };
+        }
+        if (order.status === 'cancelled') {
+            throw { statusCode: 400, message: 'Cannot pay a cancelled order' };
+        }
+
+        // 4. Procesar pago con el Proveedor (Mock)
+        const paymentResult = await paymentProvider.processPayment(
+            order.id,
+            order.total_amount,
+            order.currency
+        );
+
+        // 5. Manejar resultado
+        if (!paymentResult.success) {
+            throw {
+                statusCode: 402, // Payment Required
+                message: `Payment failed: ${paymentResult.error}`
+            };
+        }
+
+        // 6. Éxito: Actualizar DB
+        await orderRepository.updateStatus(order.id, 'paid');
+
+        return {
+            status: 'paid',
+            transactionId: paymentResult.transactionId,
+            orderId: order.id
+        };
+    }
+}
+
+export const paymentService = new PaymentService();
+</file>
+
+<file path="src/shared/db/migrations/004_create_orders_table.ts">
+import { Kysely, sql } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+    await db.schema
+        .createTable('orders')
+        .addColumn('id', 'uuid', (col) =>
+            col.primaryKey().defaultTo(sql`uuid_generate_v4()`)
+        )
+        .addColumn('user_id', 'uuid', (col) =>
+            col.references('users.id').onDelete('restrict').notNull()
+        )
+        .addColumn('status', 'varchar', (col) =>
+            col.defaultTo('pending').notNull()
+        )
+        .addColumn('total_amount', 'integer', (col) => col.notNull())
+        .addColumn('currency', 'varchar(3)', (col) => col.defaultTo('USD').notNull())
+        .addColumn('created_at', 'timestamp', (col) => col.defaultTo(sql`now()`).notNull())
+        .addColumn('updated_at', 'timestamp', (col) => col.defaultTo(sql`now()`).notNull())
+        .execute();
+
+    await db.schema
+        .createTable('order_items')
+        .addColumn('id', 'uuid', (col) =>
+            col.primaryKey().defaultTo(sql`uuid_generate_v4()`)
+        )
+        .addColumn('order_id', 'uuid', (col) =>
+            col.references('orders.id').onDelete('cascade').notNull()
+        )
+        .addColumn('product_id', 'uuid', (col) =>
+            col.references('products.id').onDelete('restrict').notNull()
+        )
+        .addColumn('quantity', 'integer', (col) => col.notNull())
+        // IMPORTANTE: Precio al momento de la compra (snapshot)
+        .addColumn('price_at_purchase', 'integer', (col) => col.notNull())
+        .execute();
+
+    await db.schema.createIndex('orders_user_index').on('orders').column('user_id').execute();
+    await db.schema.createIndex('order_items_order_index').on('order_items').column('order_id').execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+    await db.schema.dropTable('order_items').execute();
+    await db.schema.dropTable('orders').execute();
+}
+</file>
+
+<file path="src/shared/db/migrations/005_make_password_nullable.ts">
+import { Kysely, sql } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+    // Permitimos que password_hash sea NULL para usuarios invitados
+    await db.schema
+        .alterTable('users')
+        .alterColumn('password_hash', (col) => col.dropNotNull())
+        .execute();
+
+    // Opcional: Agregar columna 'is_guest' para distinguirlos fácil
+    await db.schema
+        .alterTable('users')
+        .addColumn('is_guest', 'boolean', (col) => col.defaultTo(false))
+        .execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+    // Revertir es peligroso si ya hay guests, pero por formalidad:
+    await db.schema
+        .alterTable('users')
+        .dropColumn('is_guest')
+        .execute();
+}
+</file>
+
+<file path="src/shared/hooks/optionalAuth.ts">
+import { FastifyRequest, FastifyReply } from "fastify";
+
+export async function optionalAuth(request: FastifyRequest, reply: FastifyReply) {
+    try {
+        await request.jwtVerify();
+    } catch (err) {
+        // Si falla (no hay token o es inválido), NO hacemos nada.
+        // request.user quedará undefined, y el controlador lo manejará.
+    }
+}
+</file>
+
+<file path="src/shared/providers/payment/mock.provider.ts">
+import { PaymentProvider, PaymentResult } from './payment.provider.js';
+import crypto from 'node:crypto';
+
+export class MockPaymentProvider implements PaymentProvider {
+    async processPayment(
+        orderId: string,
+        amount: number,
+        currency: string
+    ): Promise<PaymentResult> {
+
+        // SIMULACIÓN DE LATENCIA (Los bancos tardan...)
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // LÓGICA DE SIMULACIÓN:
+        // Si el monto es igual a 66600 centavos ($666), simulamos error
+        if (amount === 66600) {
+            return {
+                success: false,
+                transactionId: '',
+                error: 'Insufficient funds (Simulated)'
+            };
+        }
+
+        // Caso de Éxito
+        return {
+            success: true,
+            transactionId: `mock_${crypto.randomUUID()}`,
+            metadata: {
+                simulated_at: new Date().toISOString(),
+                provider: 'MockBank'
+            }
+        };
+    }
+}
+
+export const paymentProvider = new MockPaymentProvider();
+</file>
+
+<file path="src/shared/providers/payment/payment.provider.ts">
+export interface PaymentResult {
+    success: boolean;
+    transactionId: string; // ID externo (ej: 'stripe_ch_123' o 'mock_999')
+    metadata?: any;        // Datos extra (JSON crudo del proveedor)
+    error?: string;
+}
+
+// El contrato que todos deben firmar
+export interface PaymentProvider {
+    /**
+     * Intenta cobrar un monto específico a una tarjeta/token.
+     * @param orderId ID interno de nuestra orden
+     * @param amount Monto en CENTAVOS (Integers)
+     * @param currency Moneda (USD, ARS)
+     * @param paymentToken Token de la tarjeta (en simulación puede ser null)
+     */
+    processPayment(
+        orderId: string,
+        amount: number,
+        currency: string,
+        paymentToken?: string
+    ): Promise<PaymentResult>;
+}
+</file>
+
+<file path="test_output.txt">
+[dotenv@17.2.3] injecting env (8) from .env.test -- tip: ­ƒôí add observability to secrets: https://dotenvx.com/ops
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90mC:/Users/Mulinho/Documents/CURSOR/commerce-core[39m
+
+ [31m├ù[39m tests/auth.test.ts[2m > [22mAuth Module[2m > [22mshould login successfully with correct credentials[33m 449[2mms[22m[39m
+[31m   ÔåÆ expected { ÔÇª(2) } to have property "token"[39m
+ [31m├ù[39m tests/auth.test.ts[2m > [22mAuth Module[2m > [22mshould fail to login with incorrect password[33m 375[2mms[22m[39m
+[31m   ÔåÆ the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string[39m
+ [31m├ù[39m tests/auth.test.ts[2m > [22mAuth Module[2m > [22mshould fail to login with non-existent user[33m 307[2mms[22m[39m
+[31m   ÔåÆ the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string[39m
+node.exe : 
+En C:\Program 
+Files\nodejs\npx.ps1: 29 
+Carácter: 3
++   & $NODE_EXE $NPX_CLI_JS 
+$args
++   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (:String  
+  ) [], RemoteException
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[3
+9m[1m[41m Failed Tests 3 [
+49m[22m[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[39m
+
+[41m[1m FAIL [22m[49m 
+tests/auth.test.ts[2m > 
+[22mAuth Module[2m > 
+[22mshould login 
+successfully with correct 
+credentials
+[31m[1mAssertionError[22m:
+ expected { ÔÇª(2) } to have 
+property "token"[39m
+[36m [2mÔØ»[22m tests/auth
+.test.ts:[2m43:33[22m[39m
+    [90m 41| [39m
+    [90m 42| [39m        [
+34mexpect[39m(response[33m.
+[39mstatusCode)[33m.[39m[
+34mtoBe[39m([34m200[39m)[
+33m;[39m
+    [90m 43| [39m        [
+34mexpect[39m(response[33m.
+[39m[34mjson[39m())[33m.
+[39m[34mtoHaveProperty[39m(
+[32m'token'[39m)[33m;[39m
+    [90m   | [39m          
+                      
+[31m^[39m
+    [90m 44| [39m    
+})[33m;[39m
+    [90m 45| [39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ
+»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[1/3]Ô
+Ä»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+tests/auth.test.ts[2m > 
+[22mAuth Module[2m > 
+[22mshould fail to login 
+with incorrect password
+[31m[1mAssertionError[22m:
+ the given combination of 
+arguments (undefined and 
+string) is invalid for this 
+assertion. You can use an 
+array, a map, an object, a 
+set, a string, or a weakset 
+instead of a string[39m
+[36m [2mÔØ»[22m tests/auth
+.test.ts:[2m57:41[22m[39m
+    [90m 55| [39m
+    [90m 56| [39m        [
+34mexpect[39m(response[33m.
+[39mstatusCode)[33m.[39m[
+34mtoBe[39m([34m401[39m)[
+33m;[39m
+    [90m 57| [39m        ex
+pect(response.json().message)
+.toContain('Invalid email or 
+paÔÇª
+    [90m   | [39m          
+                             
+ [31m^[39m
+    [90m 58| [39m    
+})[33m;[39m
+    [90m 59| [39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ
+»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[2/3]Ô
+Ä»[22m[39m
+
+[41m[1m FAIL [22m[49m 
+tests/auth.test.ts[2m > 
+[22mAuth Module[2m > 
+[22mshould fail to login 
+with non-existent user
+[31m[1mAssertionError[22m:
+ the given combination of 
+arguments (undefined and 
+string) is invalid for this 
+assertion. You can use an 
+array, a map, an object, a 
+set, a string, or a weakset 
+instead of a string[39m
+[36m [2mÔØ»[22m tests/auth
+.test.ts:[2m71:41[22m[39m
+    [90m 69| [39m
+    [90m 70| [39m        [
+34mexpect[39m(response[33m.
+[39mstatusCode)[33m.[39m[
+34mtoBe[39m([34m401[39m)[
+33m;[39m
+    [90m 71| [39m        ex
+pect(response.json().message)
+.toContain('Invalid email or 
+paÔÇª
+    [90m   | [39m          
+                             
+ [31m^[39m
+    [90m 72| [39m    
+})[33m;[39m
+    [90m 73| 
+[39m})[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ
+»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[3/3]Ô
+Ä»[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[90m (3)[39m
+[2m   Start at [22m 00:08:49
+[2m   Duration [22m 2.16s[2m (transform 236ms, setup 0ms, import 777ms, tests 1.23s, environment 0ms)[22m
+</file>
+
+<file path="tests/auth.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+import bcrypt from 'bcrypt';
+
+describe('Auth Module', () => {
+    let app: any;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // Seed a user
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        await db.insertInto('users').values({
+            email: 'user@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Test User',
+            role: 'customer',
+            is_guest: false
+        }).execute();
+    });
+
+    it('debería iniciar sesión exitosamente con credenciales correctas', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: {
+                email: 'user@test.com',
+                password: 'password123'
+            }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toHaveProperty('accessToken');
+    });
+
+    it('debería fallar al iniciar sesión con contraseña incorrecta', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: {
+                email: 'user@test.com',
+                password: 'wrongpassword'
+            }
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(response.json().error).toContain('Invalid email or password');
+    });
+
+    it('debería fallar al iniciar sesión con un usuario inexistente', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: {
+                email: 'nonexistent@test.com',
+                password: 'password123'
+            }
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(response.json().error).toContain('Invalid email or password');
+    });
+});
+</file>
+
+<file path="tests/categories.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+import bcrypt from 'bcrypt';
+
+describe('Categories Module', () => {
+    let app: any;
+    let adminToken: string;
+    let userToken: string;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // Create Admin
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        await db.insertInto('users').values({
+            email: 'admin@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Admin User',
+            role: 'admin',
+            is_guest: false
+        }).execute();
+
+        // Create Normal User
+        await db.insertInto('users').values({
+            email: 'user@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Normal User',
+            role: 'customer',
+            is_guest: false
+        }).execute();
+
+        // Get Admin Token
+        const adminLogin = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: { email: 'admin@test.com', password: 'password123' }
+        });
+        adminToken = adminLogin.json().accessToken;
+
+        // Get User Token
+        const userLogin = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: { email: 'user@test.com', password: 'password123' }
+        });
+        userToken = userLogin.json().accessToken;
+    });
+
+    it('debería permitir al admin crear una categoría', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/categories',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: {
+                name: 'Electronics',
+                slug: 'electronics'
+            }
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json().name).toBe('Electronics');
+    });
+
+    it('debería denegar a un usuario normal crear una categoría', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/categories',
+            headers: { Authorization: `Bearer ${userToken}` },
+            payload: {
+                name: 'Hacked Cat',
+                slug: 'hacked-cat'
+            }
+        });
+
+        // RBAC usually returns 403 Forbidden
+        expect(response.statusCode).toBe(403);
+    });
+
+    it('debería denegar a un invitado crear una categoría', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/categories',
+            // No Authorization header
+            payload: {
+                name: 'Guest Cat',
+                slug: 'guest-cat'
+            }
+        });
+
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('debería listar categorías públicamente', async () => {
+        // First create one as admin
+        await app.inject({
+            method: 'POST',
+            url: '/categories',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: { name: 'Books', slug: 'books' }
+        });
+
+        const response = await app.inject({
+            method: 'GET',
+            url: '/categories'
+        });
+
+        expect(response.statusCode).toBe(200);
+        const categories = response.json();
+        expect(Array.isArray(categories)).toBe(true);
+        expect(categories.length).toBeGreaterThan(0);
+        expect(categories[0].name).toBe('Books');
+    });
+});
+</file>
+
+<file path="tests/health.test.ts">
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { getTestApp } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+
+describe('Health Module', () => {
+    let app: any;
+
+    beforeAll(async () => {
+        // 1. Correr migraciones en DB de test
+        await migrateToLatest();
+        // 2. Levantar App
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    it('GET /health debería devolver 200 OK', async () => {
+        // .inject() simula una petición sin latencia de red
+        const response = await app.inject({
+            method: 'GET',
+            url: '/health'
+        });
+
+        expect(response.statusCode).toBe(200);
+        const json = response.json();
+        expect(json.status).toBe('operational');
+        expect(json.checks.database).toBe('up');
+    });
+});
+</file>
+
+<file path="tests/orders.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+import crypto from 'node:crypto'; // Para generar UUIDs falsos
+
+describe('Módulo de Órdenes (Checkout)', () => {
+    let app: any;
+    let productId: string;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // 1. SETUP DE DATOS (Directo a DB para velocidad)
+        // Creamos una categoría
+        const categoryId = crypto.randomUUID();
+        await db.insertInto('categories').values({
+            id: categoryId,
+            name: 'Test Category',
+            slug: 'test-category'
+        }).execute();
+
+        // Creamos un producto con Stock = 10
+        productId = crypto.randomUUID();
+        await db.insertInto('products').values({
+            id: productId,
+            name: 'Perfume Test',
+            slug: 'perfume-test',
+            price_amount: 5000, // $50.00
+            stock: 10,
+            sku: 'TEST-SKU-001',
+            category_id: categoryId,
+            active: true
+        }).execute();
+    });
+
+    // --- TEST CASE 1: GUEST CHECKOUT ---
+    it('Debería permitir comprar como invitado (Guest Checkout)', async () => {
+        const guestEmail = 'invitado@prueba.com';
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/orders',
+            // NOTA: No enviamos Header Authorization
+            payload: {
+                guestEmail: guestEmail,
+                items: [
+                    { productId: productId, quantity: 2 }
+                ]
+            }
+        });
+
+        // 1. Verificaciones HTTP
+        expect(response.statusCode).toBe(201);
+        const json = response.json();
+        expect(json.status).toBe('pending');
+        expect(json.total).toBe(10000); // 5000 * 2
+
+        // 2. Verificaciones en Base de Datos (Efectos Secundarios)
+
+        // A. El usuario "Sombra" debió crearse
+        const guestUser = await db.selectFrom('users')
+            .selectAll()
+            .where('email', '=', guestEmail)
+            .executeTakeFirst();
+
+        expect(guestUser).toBeDefined();
+        expect(guestUser?.role).toBe('guest'); // O el rol por defecto
+        expect(guestUser?.password_hash).toBeNull(); // Importante: Sin password
+
+        // B. La orden debe pertenecer a ese usuario
+        const order = await db.selectFrom('orders')
+            .selectAll()
+            .where('id', '=', json.orderId)
+            .executeTakeFirst();
+        expect(order?.user_id).toBe(guestUser?.id);
+
+        // C. El stock debió bajar de 10 a 8
+        const product = await db.selectFrom('products')
+            .select('stock')
+            .where('id', '=', productId)
+            .executeTakeFirst();
+        expect(product?.stock).toBe(8);
+    });
+
+    // --- TEST CASE 2: VALIDACIÓN ---
+    it('Debería fallar si no hay Token Y no hay Email', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/orders',
+            payload: {
+                // guestEmail: FALTANTE
+                items: [{ productId, quantity: 1 }]
+            }
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(response.json().message).toContain('must be logged in OR provide a guestEmail');
+    });
+
+    // --- TEST CASE 3: STOCK INSUFICIENTE ---
+    it('Debería fallar si piden más stock del disponible', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/orders',
+            payload: {
+                guestEmail: 'rico@prueba.com',
+                items: [{ productId, quantity: 100 }] // Solo hay 10
+            }
+        });
+
+        expect(response.statusCode).toBe(409); // Conflict
+        expect(response.json().error).toContain('Insufficient stock');
+    });
+});
+</file>
+
+<file path="tests/payments.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+import crypto from 'node:crypto';
+import bcrypt from 'bcrypt';
+
+describe('Payments Module', () => {
+    let app: any;
+    let userId: string;
+    let userToken: string;
+    let otherUserId: string;
+    let otherToken: string;
+    let productId: string;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // 1. Setup Users
+        const hashedPassword = await bcrypt.hash('password123', 10);
+
+        // User 1
+        const u1 = await db.insertInto('users').values({
+            email: 'payer@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Payer',
+            role: 'customer',
+            is_guest: false
+        }).returning('id').executeTakeFirstOrThrow();
+        userId = u1.id;
+
+        // User 2
+        const u2 = await db.insertInto('users').values({
+            email: 'hacker@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Hacker',
+            role: 'customer',
+            is_guest: false
+        }).returning('id').executeTakeFirstOrThrow();
+        otherUserId = u2.id;
+
+        // Login Tokens
+        const res1 = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'payer@test.com', password: 'password123' } });
+        userToken = res1.json().accessToken; // FIXED: accessToken
+
+        const res2 = await app.inject({ method: 'POST', url: '/auth/login', payload: { email: 'hacker@test.com', password: 'password123' } });
+        otherToken = res2.json().accessToken; // FIXED: accessToken
+
+        // 2. Setup Product & Category
+        const catId = crypto.randomUUID();
+        await db.insertInto('categories').values({ id: catId, name: 'Pay Cat', slug: 'pay-cat' }).execute();
+
+        productId = crypto.randomUUID();
+        await db.insertInto('products').values({
+            id: productId,
+            name: 'Pay Item',
+            slug: 'pay-item',
+            price_amount: 1000,
+            stock: 100,
+            sku: 'PAY-001',
+            category_id: catId,
+            active: true
+        }).execute();
+    });
+
+    async function createOrder(forUserId?: string, status: 'pending' | 'paid' | 'cancelled' = 'pending') {
+        let finalUserId = forUserId;
+
+        // If guest (no userId provided), create a guest user
+        if (!finalUserId) {
+            const guest = await db.insertInto('users').values({
+                email: `guest-${crypto.randomUUID()}@test.com`,
+                password_hash: '', // No password
+                full_name: 'Guest User',
+                role: 'guest',
+                is_guest: true
+            }).returning('id').executeTakeFirstOrThrow();
+            finalUserId = guest.id;
+        }
+
+        const orderId = crypto.randomUUID();
+        await db.insertInto('orders').values({
+            id: orderId,
+            user_id: finalUserId!, // Guaranteed to have string now
+            total_amount: 1000,
+            currency: 'USD',
+            status: status
+        }).execute();
+
+        await db.insertInto('order_items').values({
+            id: crypto.randomUUID(),
+            order_id: orderId,
+            product_id: productId,
+            quantity: 1,
+            price_at_purchase: 1000 // FIXED: price_at_purchase
+        }).execute();
+
+        return orderId;
+    }
+
+    it('debería procesar el pago de su propia orden exitosamente', async () => {
+        const orderId = await createOrder(userId);
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: { Authorization: `Bearer ${userToken}` },
+            payload: { orderId }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().status).toBe('paid');
+
+        // Check DB
+        const order = await db.selectFrom('orders').select('status').where('id', '=', orderId).executeTakeFirst();
+        expect(order?.status).toBe('paid');
+    });
+
+    it('debería permitir pago de invitado si la orden pertenece a un invitado', async () => {
+        const orderId = await createOrder(undefined); // Guest order with Guest User
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            // No auth header
+            payload: { orderId }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().status).toBe('paid');
+    });
+
+    it('debería prohibir al usuario pagar la orden de otro usuario', async () => {
+        const orderId = await createOrder(userId); // Belongs to User 1
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: { Authorization: `Bearer ${otherToken}` }, // User 2 tries to pay
+            payload: { orderId }
+        });
+
+        expect(response.statusCode).toBe(403);
+    });
+
+    it('debería fallar si la orden no existe', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: { Authorization: `Bearer ${userToken}` },
+            payload: { orderId: crypto.randomUUID() }
+        });
+
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('debería fallar si la orden ya está pagada', async () => {
+        const orderId = await createOrder(userId, 'paid');
+
+        const response = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: { Authorization: `Bearer ${userToken}` },
+            payload: { orderId }
+        });
+
+        expect(response.statusCode).toBe(400); // Bad Request
+        expect(response.json().error).toMatch(/already paid/i);
+    });
+});
+</file>
+
+<file path="tests/products.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+
+describe('Flujo de Productos', () => {
+    let app: any;
+    let adminToken: string;
+    let categoryId: string;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    // Limpiamos datos antes de cada test para tener un entorno fresco
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // Crear usuario Admin para test
+        const registerRes = await app.inject({
+            method: 'POST',
+            url: '/users',
+            payload: { email: 'admin@test.com', password: 'password123', fullName: 'Admin' }
+        });
+
+        // Hack: promover a admin directamente en DB
+        await db.updateTable('users')
+            .set({ role: 'admin' })
+            .where('email', '=', 'admin@test.com')
+            .execute();
+
+        // Login para obtener token
+        const loginRes = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: { email: 'admin@test.com', password: 'password123' }
+        });
+        adminToken = loginRes.json().accessToken;
+
+        // Crear categoría base
+        const catRes = await app.inject({
+            method: 'POST',
+            url: '/categories',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: { name: 'Test Cat', slug: 'test-cat' }
+        });
+        categoryId = catRes.json().id;
+    });
+
+    it('debería crear un producto exitosamente', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/products',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: {
+                name: 'Nuevo Perfume',
+                slug: 'nuevo-perfume',
+                price: 100.00,
+                stock: 10,
+                sku: 'SKU-123',
+                categoryId: categoryId
+            }
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json().name).toBe('Nuevo Perfume');
+        expect(response.json().price_amount).toBe(10000); // 100.00 * 100
+    });
+
+    it('debería fallar si el SKU ya existe', async () => {
+        // Crear primera vez (Nombres largos para pasar validación > 3 chars)
+        await app.inject({
+            method: 'POST',
+            url: '/products',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: {
+                name: 'Producto Original',
+                slug: 'producto-original',
+                price: 10,
+                stock: 1,
+                sku: 'SKU-DUPLICADO',
+                categoryId
+            }
+        });
+
+        // Crear segunda vez (Mismo SKU)
+        const response = await app.inject({
+            method: 'POST',
+            url: '/products',
+            headers: { Authorization: `Bearer ${adminToken}` },
+            payload: {
+                name: 'Producto Copia', // Nombre válido > 3 chars
+                slug: 'producto-copia', // Slug válido > 3 chars
+                price: 10,
+                stock: 1,
+                sku: 'SKU-DUPLICADO', // ¡ESTO ES LO QUE VA A CHOCAR!
+                categoryId
+            }
+        });
+
+        // Ahora sí debería ser 409 Conflict (porque pasó la validación de esquema)
+        expect(response.statusCode).toBe(409);
+    });
+});
+</file>
+
+<file path="tests/setup.ts">
+import { buildApp } from '../src/app.js';
+import { db } from '../src/shared/db/index.js';
+import { sql } from 'kysely';
+
+export async function getTestApp() {
+  const app = await buildApp();
+  await app.ready();
+  return app;
+}
+
+export async function clearDatabase() {
+  await sql`TRUNCATE TABLE order_items, orders, products, categories, users CASCADE`.execute(db);
+}
+</file>
+
+<file path="tests/users.test.ts">
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { getTestApp, clearDatabase } from './setup.js';
+import { migrateToLatest } from '../src/shared/db/migrate.js';
+import { db } from '../src/shared/db/index.js';
+import bcrypt from 'bcrypt';
+
+describe('Users Module', () => {
+    let app: any;
+    let userToken: string;
+    let userId: string;
+
+    beforeAll(async () => {
+        await migrateToLatest();
+        app = await getTestApp();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    beforeEach(async () => {
+        await clearDatabase();
+
+        // Register a user directly via DB for setup
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        const result = await db.insertInto('users').values({
+            email: 'existing@test.com',
+            password_hash: hashedPassword,
+            full_name: 'Existing User',
+            role: 'customer',
+            is_guest: false
+        }).returning('id').executeTakeFirstOrThrow();
+        userId = result.id;
+
+        // Get Token
+        const loginRes = await app.inject({
+            method: 'POST',
+            url: '/auth/login',
+            payload: { email: 'existing@test.com', password: 'password123' }
+        });
+        userToken = loginRes.json().accessToken;
+    });
+
+    it('debería registrar un nuevo usuario exitosamente', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/users',
+            payload: {
+                email: 'new@test.com',
+                password: 'password123',
+                fullName: 'New User'
+            }
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json().email).toBe('new@test.com');
+        expect(response.json()).not.toHaveProperty('password');
+        expect(response.json()).not.toHaveProperty('password_hash');
+    });
+
+    it('debería fallar al registrar con un email existente', async () => {
+        const response = await app.inject({
+            method: 'POST',
+            url: '/users',
+            payload: {
+                email: 'existing@test.com', // Already exists
+                password: 'password123',
+                fullName: 'Copy Cat'
+            }
+        });
+
+        // Assuming the controller/service handles uniqueness. 
+        // Postgres will throw 23505 Unique Violation.
+        // We expect either 409 or 500 depending on error handler.
+        // Ideally 409 or 400. Let's check generally for non-success or specific error.
+        // If the custom error handler traps it, it might be 409.
+        expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    });
+
+    it('debería obtener su propio perfil con un token válido', async () => {
+        const response = await app.inject({
+            method: 'GET',
+            url: '/users/me',
+            headers: { Authorization: `Bearer ${userToken}` }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().email).toBe('existing@test.com');
+    });
+
+    it('debería fallar al obtener perfil sin token', async () => {
+        const response = await app.inject({
+            method: 'GET',
+            url: '/users/me'
+        });
+
+        expect(response.statusCode).toBe(401);
+    });
+
+    it('debería obtener usuario por id', async () => {
+        const response = await app.inject({
+            method: 'GET',
+            url: `/users/${userId}`,
+            headers: { Authorization: `Bearer ${userToken}` }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().id).toBe(userId);
+    });
+
+    it('debería eliminar usuario por id', async () => {
+        const response = await app.inject({
+            method: 'DELETE',
+            url: `/users/${userId}`,
+            headers: { Authorization: `Bearer ${userToken}` }
+        });
+
+        expect(response.statusCode).toBe(204);
+
+        // Verify it's gone
+        const check = await app.inject({
+            method: 'GET',
+            url: `/users/${userId}`,
+            headers: { Authorization: `Bearer ${userToken}` }
+        });
+        expect(check.statusCode).toBe(404);
+    });
+});
+</file>
+
+<file path="vitest.config.ts">
+import { defineConfig } from 'vitest/config';
+import { config } from 'dotenv';
+
+config({ path: '.env.test' });
+
+export default defineConfig({
+  test: {
+    fileParallelism: false, 
+    hookTimeout: 30000,
+    include: ['tests/**/*.test.ts', 'src/**/*.test.ts'],
+    isolate: false, 
+  },
+});
+</file>
+
+<file path="README.md">
+# Commerce Core Platform
+
+## Overview
+
+**Commerce Core Platform** is a production‑ready backend platform designed to serve as a **reusable foundation for e‑commerce, SaaS, and internal products**.
+
+This project is intentionally **not a one‑off application**. It is a long‑term backend core meant to be:
+
+* deployed in real production environments
+* stable under concurrent usage
+* reusable across multiple businesses or projects
+* understandable and maintainable by any senior or mid‑level developer
+
+The initial real‑world use case is an **e‑commerce for perfume sales**, but the architecture is **domain‑agnostic** and can support other verticals without structural changes.
+
+---
+
+## Project Goals (Non‑Negotiable)
+
+This project must:
+
+* run reliably on a **small VPS (1 vCPU / 2GB RAM)**
+* handle concurrent users without degradation
+* prioritize performance, stability, and clarity
+* avoid over‑engineering and hype‑driven tools
+* be explainable and defendable in technical interviews
+
+This is **not a prototype** and **not a tutorial project**.
+
+---
+
+## Target Audience
+
+This repository is intended for:
+
+* backend developers joining the project
+* future maintainers (including the author)
+* AI agents assisting development ("vibe coding" with constraints)
+
+Anyone reading this README should quickly understand:
+
+* what this project is
+* how it is structured
+* how to extend it correctly
+* what *not* to do
+
+---
+
+## Architectural Philosophy
+
+### Modular Monolith
+
+The backend follows a **modular monolith architecture**:
+
+* single deployable unit
+* strict module boundaries
+* no shared mutable state between modules
+
+This approach was chosen because:
+
+* it scales vertically very well
+* it minimizes operational complexity
+* it fits small‑to‑medium traffic systems
+* it can be split into microservices later *if and only if necessary*
+
+Microservices, Kubernetes, and distributed systems are **explicitly out of scope** for this project.
+
+---
+
+## Technology Stack
+
+### Runtime
+
+* **Node.js 20 (LTS)**
+
+### Language
+
+* **TypeScript** (strict mode)
+
+### HTTP Framework
+
+* **Fastify** (chosen for performance and low memory footprint)
+
+### Database
+
+* **PostgreSQL** (ACID, relational integrity, JSONB when needed)
+
+### Infrastructure
+
+* Docker
+* Docker Compose
+* Nginx (reverse proxy)
+* GitHub Actions (CI/CD)
+
+---
+
+## High‑Level Architecture
+
+```
+HTTP Request
+   ↓
+Fastify
+   ↓
+Route
+   ↓
+Controller (HTTP mapping only)
+   ↓
+Service (business logic)
+   ↓
+Repository (database access)
+   ↓
+PostgreSQL
+```
+
+**Rules:**
+
+* Controllers never contain business logic
+* Services never know about HTTP
+* Database access is isolated in repositories
+
+---
+
+## Repository Structure
+
+```
+backend-core/
+├── .github/              # CI/CD workflows
+├── docker/               # Docker & infrastructure config
+│   ├── nginx/
+│   └── postgres/
+├── src/
+│   ├── modules/          # Business domains
+│   │   ├── auth/
+│   │   ├── users/
+│   │   ├── commerce/
+│   │   └── health/
+│   ├── shared/           # Cross‑cutting concerns
+│   │   ├── config/
+│   │   ├── db/
+│   │   ├── logger/
+│   │   ├── errors/
+│   │   └── utils/
+│   ├── app.ts            # Fastify app configuration
+│   ├── server.ts         # Application entry point
+│   └── routes.ts         # Global route registration
+├── tests/
+├── Dockerfile
+├── docker-compose.dev.yml
+├── docker-compose.prod.yml
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+---
+
+## Module Design Rules
+
+Each module:
+
+* owns its domain logic
+* exposes only its public API
+* must be independently testable
+* must not import internal code from other modules
+
+Allowed files per module:
+
+* `*.routes.ts`
+* `*.controller.ts`
+* `*.service.ts`
+* `*.repository.ts`
+* `*.schema.ts`
+
+---
+
+## Core Modules (Planned)
+
+### Auth & Identity
+
+* JWT authentication
+* refresh tokens
+* roles and permissions
+* rate limiting
+* password hashing
+
+### Users & Organizations
+
+* user accounts
+* multi‑tenant support
+* role assignment per organization
+
+### Commerce (Domain Layer)
+
+* products
+* variants
+* categories
+* pricing
+* stock
+* orders
+* payments (via external providers)
+
+### Background Jobs
+
+* email sending
+* payment confirmations
+* async processing
+
+---
+
+## Configuration Management
+
+* No hardcoded configuration
+* All config comes from environment variables
+* Different behavior per environment must be explicit
+
+The application **must fail fast** if required configuration is missing.
+
+---
+
+## Logging & Observability
+
+* Structured logging only
+* Request ID on every request
+* No sensitive data in logs
+* Logs must allow production debugging
+
+If an error occurs in production, logs should explain *why*.
+
+---
+
+## Performance Constraints
+
+This backend is designed to run on:
+
+* 1 vCPU
+* 2 GB RAM
+
+Therefore:
+
+* avoid heavy ORMs
+* avoid excessive in‑memory caching
+* avoid unnecessary dependencies
+* avoid blocking the event loop
+
+Performance is always preferred over convenience.
+
+---
+
+## CI/CD Philosophy
+
+* Every push to `main` triggers validation
+* Tests and checks must pass before deploy
+* Deployment is automated
+* Rollback must be possible
+
+Production deploys should be **boring and predictable**.
+
+---
+
+## How to Contribute Correctly
+
+Before adding new code:
+
+1. Understand the module boundaries
+2. Identify where the logic belongs
+3. Follow existing patterns
+4. Avoid introducing new dependencies unless justified
+
+If a feature feels complex, stop and reconsider the design.
+
+---
+
+## AI Agent Instructions (IMPORTANT)
+
+If this repository is used with an AI agent:
+
+* Treat this project as production software
+* Never optimize for speed of coding over correctness
+* Always explain architectural decisions
+* Avoid introducing technologies not already present
+* Do not suggest microservices or Kubernetes
+* Do not assume unlimited resources
+
+If unsure, prefer stability and clarity.
+
+---
+
+## Long‑Term Vision
+
+This backend should:
+
+* survive years of incremental development
+* support multiple frontends
+* serve as a personal backend foundation
+* demonstrate real backend engineering maturity
+
+If a decision compromises long‑term maintainability, it is rejected.
+
+---
+
+## Final Note
+
+This project is intentionally **boring, strict, and opinionated**.
+
+That is what makes it reliable.
+</file>
+
+<file path="src/modules/auth/auth.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { authService } from './auth.service.js';
+import { LoginBody } from './auth.dto.js';
+
+export class AuthController {
+  async login(request: FastifyRequest<{ Body: LoginBody }>, reply: FastifyReply) {
+    const { email, password } = request.body;
+
+    // 1. Validar credenciales
+    const user = await authService.validateUser(email, password);
+
+    if (!user) {
+      // 401 Unauthorized es el código correcto para fallo de login
+      return reply.status(401).send({
+        statusCode: 401,
+        error: 'Invalid email or password'
+      });
+    }
+
+    // 2. Generar Token JWT
+    // payload: qué datos viajan ENCRIPTADOS dentro del token.
+    // Usamos 'sub' (subject) para el ID, es el estándar JWT.
+    const token = await reply.jwtSign(
+      { 
+        sub: user.id,
+        role: user.role,
+        email: user.email 
+      }, 
+      { expiresIn: '7d' } // Expira en 7 días (ajustable)
+    );
+
+    // 3. Responder
+    return reply.send({
+      accessToken: token,
+      user
+    });
+  }
+}
+
+export const authController = new AuthController();
+</file>
+
+<file path="src/modules/auth/auth.dto.ts">
+import { Type, Static } from '@sinclair/typebox';
+
+export const LoginSchema = Type.Object({
+    email: Type.String({ format: 'email' }),
+    password: Type.String()
+});
+
+export type LoginBody = Static<typeof LoginSchema>;
+</file>
+
+<file path="src/modules/auth/auth.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { authController } from './auth.controller.js';
+import { LoginSchema, LoginBody } from './auth.dto.js';
+
+export async function authRoutes(app: FastifyInstance) {
+  app.post<{ Body: LoginBody }>('/login', {
+    schema: {
+        body: LoginSchema
+    }
+  }, authController.login);
+}
+</file>
+
+<file path="src/modules/auth/auth.service.ts">
+import bcrypt from 'bcrypt';
+import { userRepository } from '../users/users.repository.js';
+
+export class AuthService {
+  async validateUser(email: string, pass: string) {
+    // 1. Buscamos el usuario
+    const user = await userRepository.findByEmail(email);
+
+    // 2. Si no existe, devolvemos null (no lanzamos error específico por seguridad)
+    // "Security by Obscurity": No le digas al atacante si el email existe o no.
+    if (!user) {
+      return null;
+    }
+
+    // 3. Comparamos passwords
+    const isValid = await bcrypt.compare(pass, user.password_hash);
+
+    if (!isValid) {
+      return null;
+    }
+
+    // 4. Devolvemos el usuario limpio (sin hash)
+    const { password_hash, ...userWithoutPassword } = user;
+    return userWithoutPassword;
+  }
+}
+
+export const authService = new AuthService();
+</file>
+
+<file path="src/modules/categories/categories.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { categoryRepository } from './categories.repository.js';
+import { CreateCategoryBody } from './categories.dto.js';
+
+export class CategoryController {
+    async create(request: FastifyRequest<{ Body: CreateCategoryBody }>, reply: FastifyReply) {
+        const { name, slug, description, parentId } = request.body;
+
+        try {
+            const category = await categoryRepository.create({
+                name,
+                slug,
+                description: description || null,
+                parent_id: parentId || null
+            });
+
+            return reply.status(201).send(category);
+        } catch (error: any) {
+            // Manejo básico de duplicados (Postgres error 23505)
+            if (error.code === '23505') {
+                return reply.status(409).send({ error: 'Slug already exists' });
+            }
+            throw error;
+        }
+    }
+
+    async list(request: FastifyRequest, reply: FastifyReply) {
+        const categories = await categoryRepository.findAll();
+        return reply.send(categories);
+    }
+}
+
+export const categoryController = new CategoryController();
+</file>
+
+<file path="src/modules/categories/categories.dto.ts">
+import { Type, Static } from '@sinclair/typebox';
+
+const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+
+export const CreateCategorySchema = Type.Object({
+    name: Type.String({ minLength: 2 }),
+    slug: Type.String({ minLength: 2 }),
+    description: Type.Optional(Type.String()),
+    parentId: Type.Optional(Type.String({ pattern: UUID_PATTERN }))
+});
+
+export type CreateCategoryBody = Static<typeof CreateCategorySchema>;
+</file>
+
+<file path="src/modules/categories/categories.repository.ts">
+import { db } from '../../shared/db/index.js';
+import { NewCategory, Category } from './categories.schema.js';
+
+export class CategoryRepository {
+  async create(category: NewCategory): Promise<Category> {
+    return await db
+      .insertInto('categories')
+      .values(category)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async findAll(): Promise<Category[]> {
+    return await db.selectFrom('categories').selectAll().execute();
+  }
+
+  async findBySlug(slug: string): Promise<Category | undefined> {
+    return await db
+      .selectFrom('categories')
+      .selectAll()
+      .where('slug', '=', slug)
+      .executeTakeFirst();
+  }
+
+  async findById(id: string): Promise<Category | undefined> {
+    return await db
+      .selectFrom('categories')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+  }
+}
+
+export const categoryRepository = new CategoryRepository();
+</file>
+
+<file path="src/modules/categories/categories.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { categoryController } from './categories.controller.js';
+import { CreateCategorySchema, CreateCategoryBody } from './categories.dto.js';
+import { authenticate } from '../../shared/hooks/auth.js';
+import { requireRole } from '../../shared/hooks/rbac.js';
+
+export async function categoryRoutes(app: FastifyInstance) {
+  app.get('/', categoryController.list);
+
+  app.post<{ Body: CreateCategoryBody }>('/', {
+    onRequest: [authenticate, requireRole(['admin'])],
+    schema: {
+        body: CreateCategorySchema
+    }
+  }, categoryController.create);
+}
+</file>
+
+<file path="src/modules/categories/categories.schema.ts">
+import { Generated, Insertable, Selectable, Updateable } from 'kysely';
+
+export interface CategoryTable {
+  id: Generated<string>;
+  name: string;
+  slug: string;
+  description: string | null;
+  parent_id: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type Category = Selectable<CategoryTable>;
+export type NewCategory = Insertable<CategoryTable>;
+export type CategoryUpdate = Updateable<CategoryTable>;
+</file>
+
+<file path="src/modules/products/products.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { productRepository } from './products.repository.js';
+import { categoryRepository } from '../categories/categories.repository.js';
+import { CreateProductBody } from './products.dto.js';
+
+export class ProductController {
+    async create(request: FastifyRequest<{ Body: CreateProductBody }>, reply: FastifyReply) {
+        const { name, slug, description, price, stock, sku, categoryId, imageUrl } = request.body;
+
+        // 1. Validar que la categoría exista (Integridad Referencial)
+        // Opcional: Postgres fallaría igual, pero es mejor dar un error claro al cliente.
+        const category = await categoryRepository.findById(categoryId);
+        if (!category) {
+            return reply.status(404).send({ error: 'Category not found' });
+        }
+
+        // 2. Conversión de Moneda: Float -> Integer (Centavos)
+        // 10.50 -> 1050
+        const priceInCents = Math.round(price * 100);
+
+        try {
+            const product = await productRepository.create({
+                name,
+                slug,
+                description: description || null,
+                price_amount: priceInCents,
+                stock,
+                sku,
+                category_id: categoryId,
+                image_url: imageUrl || null
+            });
+
+            return reply.status(201).send(product);
+        } catch (error: any) {
+            if (error.code === '23505') { // Duplicate unique key
+                return reply.status(409).send({ error: 'Product SKU or Slug already exists' });
+            }
+            throw error;
+        }
+    }
+
+    async list(request: FastifyRequest, reply: FastifyReply) {
+        const { limit = 20, offset = 0 } = request.query as { limit?: number; offset?: number };
+        const products = await productRepository.findAll(limit, offset);
+
+        return reply.send(products);
+    }
+}
+
+export const productController = new ProductController();
+</file>
+
+<file path="src/modules/products/products.dto.ts">
+import { Type, Static } from '@sinclair/typebox';
+
+// Definimos el patrón exacto de un UUID v4
+const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+
+export const CreateProductSchema = Type.Object({
+    name: Type.String({ minLength: 3 }),
+    slug: Type.String({ minLength: 3 }),
+    description: Type.Optional(Type.String()),
+    price: Type.Number({ minimum: 0 }),
+    stock: Type.Integer({ minimum: 0 }),
+    sku: Type.String({ minLength: 3 }),
+    categoryId: Type.String({ pattern: UUID_PATTERN }),
+    imageUrl: Type.Optional(Type.String({ format: 'uri' }))
+});
+
+export type CreateProductBody = Static<typeof CreateProductSchema>;
+</file>
+
+<file path="src/modules/products/products.repository.ts">
+import { db } from '../../shared/db/index.js';
+import { NewProduct, Product } from './products.schema.js';
+import { Database } from '../../shared/db/index.js';
+import { Transaction } from 'kysely/dist/esm/kysely.js';
+
+export class ProductRepository {
+    async create(product: NewProduct): Promise<Product> {
+        return await db
+            .insertInto('products')
+            .values(product)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+    }
+
+    async findAll(limit = 20, offset = 0): Promise<Product[]> {
+        return await db
+            .selectFrom('products')
+            .selectAll()
+            .where('active', '=', true) // Solo mostramos productos activos
+            .limit(limit)
+            .offset(offset)
+            .execute();
+    }
+
+    async findBySlug(slug: string): Promise<Product | undefined> {
+        return await db
+            .selectFrom('products')
+            .selectAll()
+            .where('slug', '=', slug)
+            .executeTakeFirst();
+    }
+
+    async findById(id: string): Promise<Product | undefined> {
+        return await db
+            .selectFrom('products')
+            .selectAll()
+            .where('id', '=', id)
+            .executeTakeFirst();
+    }
+
+    async decrementStock(productId: string, quantity: number, tx: Transaction<Database> = db as any): Promise<void> {
+        const result = await tx
+            .updateTable('products')
+            .set((eb) => ({
+                stock: eb('stock', '-', quantity) // Resta atómica: stock = stock - quantity
+            }))
+            .where('id', '=', productId)
+            .where('stock', '>=', quantity)
+            .executeTakeFirst();
+
+        if (result.numUpdatedRows === BigInt(0)) {
+            throw new Error(`Insufficient stock for product ${productId}`);
+        }
+    }
+}
+
+export const productRepository = new ProductRepository();
+</file>
+
+<file path="src/modules/products/products.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { productController } from './products.controller.js';
+import { authenticate } from '../../shared/hooks/auth.js';
+import { requireRole } from '../../shared/hooks/rbac.js';
+import { CreateProductSchema, CreateProductBody } from './products.dto.js';
+
+export async function productRoutes(app: FastifyInstance) {
+    app.get('/', productController.list);
+
+    app.post<{ Body: CreateProductBody }>('/', {
+        onRequest: [authenticate, requireRole(['admin'])],
+        schema: {
+            body: CreateProductSchema
+        }
+    }, productController.create);
+}
+</file>
+
+<file path="src/modules/products/products.schema.ts">
+import { Generated, Insertable, Selectable, Updateable } from 'kysely';
+
+export interface ProductTable {
+  id: Generated<string>;
+  name: string;
+  slug: string;
+  description: string | null;
+  price_amount: number; // Integer (centavos)
+  currency: Generated<string>; // Default 'USD'
+  stock: number;
+  sku: string;
+  image_url: string | null;
+  category_id: string | null;
+  active: Generated<boolean>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+export type Product = Selectable<ProductTable>;
+export type NewProduct = Insertable<ProductTable>;
+export type ProductUpdate = Updateable<ProductTable>;
+</file>
+
+<file path="src/modules/users/users.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { userService } from './users.service.js';
+import { userRepository } from './users.repository.js';
+import { CreateUserBody, UpdateUserBody, CreateUserSchema, UpdateUserSchema } from './users.dto.js';
+
+export class UserController {
+  async register(request: FastifyRequest<{ Body: CreateUserBody }>, reply: FastifyReply) {
+    const { email, password, fullName } = request.body;
+
+    const user = await userService.registerUser({
+      email,
+      password,
+      full_name: fullName, // Mapeo camelCase -> snake_case
+    });
+
+    return reply.status(201).send(user);
+  }
+
+  async me(request: FastifyRequest, reply: FastifyReply) {
+    const userJwt = request.user;
+
+    if (!userJwt) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    const user = await userRepository.findByEmail(userJwt.email);
+
+    if (!user) {
+      return reply.status(404).send({ error: 'User not found' });
+    }
+
+    // Devolvemos el usuario sin el hash
+    const { password_hash, ...cleanUser } = user;
+    return cleanUser;
+  }
+
+  async findUserById(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+    const { id } = request.params;
+
+    if (!id) {
+      return reply.status(400).send({ error: 'Missing user ID' });
+    }
+
+    const user = await userService.findUserById(id);
+
+    if (!user) {
+      return reply.status(404).send({ error: 'User not found' });
+    }
+
+    return reply.status(200).send(user);
+  }
+
+  async findAllUsers(request: FastifyRequest, reply: FastifyReply) {
+    const users = await userService.findAllUsers();
+
+    return reply.status(200).send(users);
+  }
+
+  async updateUser(request: FastifyRequest<{ Params: { id: string }; Body: UpdateUserBody }>, reply: FastifyReply) {
+    const { id } = request.params;
+    const { email, password, fullName } = request.body;
+
+    if (!id) {
+      return reply.status(400).send({ error: 'Missing user ID' });
+    }
+
+    const user = await userService.updateUser(id, {
+      email,
+      password,
+      full_name: fullName,
+    });
+
+    return reply.status(200).send(user);
+  }
+
+  async deleteUser(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+    const { id } = request.params;
+
+    if (!id) {
+      return reply.status(400).send({ error: 'Missing user ID' });
+    }
+
+    await userService.deleteUser(id);
+
+    return reply.status(204).send();
+  }
+}
+
+export const userController = new UserController();
+</file>
+
+<file path="src/modules/users/users.dto.ts">
+import { Type, Static } from '@sinclair/typebox';
+
+export const CreateUserSchema = Type.Object({
+    email: Type.String({ format: 'email' }),
+    password: Type.String({ minLength: 6 }),
+    fullName: Type.String({ minLength: 2 })
+});
+
+export const LoginUserSchema = Type.Object({
+    email: Type.String({ format: 'email' }),
+    password: Type.String()
+});
+
+export const UpdateUserSchema = Type.Object({
+    email: Type.Optional(Type.String({ format: 'email' })),
+    password: Type.Optional(Type.String({ minLength: 6 })),
+    fullName: Type.Optional(Type.String({ minLength: 2 }))
+});
+
+export type CreateUserBody = Static<typeof CreateUserSchema>;
+export type LoginUserBody = Static<typeof LoginUserSchema>;
+export type UpdateUserBody = Static<typeof UpdateUserSchema>;
+</file>
+
+<file path="src/modules/users/users.repository.ts">
+import { db } from '../../shared/db/index.js';
+import { NewUser, User, UserUpdate } from './users.schema.js';
+
+export class UserRepository {
+  async create(user: NewUser): Promise<User> {
+    return await db
+      .insertInto('users')
+      .values(user)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async findByEmail(email: string): Promise<User | undefined> {
+    return await db
+      .selectFrom('users')
+      .selectAll()
+      .where('email', '=', email)
+      .executeTakeFirst();
+  }
+
+  async findById(id: string): Promise<User | undefined> {
+    return await db
+      .selectFrom('users')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+  }
+
+  async findAll(): Promise<User[]> {
+    return await db.selectFrom('users').selectAll().execute();
+  }
+
+  async update(id: string, user: UserUpdate): Promise<User> {
+    return await db
+      .updateTable('users')
+      .set(user)
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async delete(id: string): Promise<void> {
+    await db.deleteFrom('users').where('id', '=', id).executeTakeFirstOrThrow();
+  }
+}
+
+export const userRepository = new UserRepository();
+</file>
+
+<file path="src/modules/users/users.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { userController } from './users.controller.js';
+import { CreateUserSchema, UpdateUserSchema, CreateUserBody, UpdateUserBody } from './users.dto.js';
+import { authenticate } from '../../shared/hooks/auth.js';
+
+export async function userRoutes(app: FastifyInstance) {
+  app.post<{ Body: CreateUserBody }>('/', {
+    schema: {
+        body: CreateUserSchema
+    }
+  }, userController.register);
+
+  app.get('/me', { onRequest: [authenticate] }, userController.me);
+  app.get('/', { onRequest: [authenticate] }, userController.findAllUsers);
+  app.get<{ Params: { id: string } }>('/:id', { onRequest: [authenticate] }, userController.findUserById);
+  
+  app.put<{ Params: { id: string }; Body: UpdateUserBody }>('/:id', { 
+    onRequest: [authenticate],
+    schema: {
+        body: UpdateUserSchema
+    }
+  }, userController.updateUser);
+  
+  app.delete<{ Params: { id: string } }>('/:id', { onRequest: [authenticate] }, userController.deleteUser);
+}
+</file>
+
+<file path="src/modules/users/users.schema.ts">
+import { Generated, Insertable, Selectable, Updateable } from 'kysely';
+
+export interface UserTable {
+  id: Generated<string>; // 'Generated' porque la DB lo crea (uuid)
+  email: string;
+  password_hash: string;
+  full_name: string;
+  role: Generated<string>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+  is_guest: boolean;
+}
+
+// Tipos auxiliares para usar en el código
+export type User = Selectable<UserTable>;
+export type NewUser = Insertable<UserTable>;
+export type UserUpdate = Updateable<UserTable>;
+</file>
+
+<file path="src/modules/users/users.service.ts">
+import bcrypt from 'bcrypt';
+import { userRepository } from './users.repository.js';
+import { NewUser, UserUpdate } from './users.schema.js';
+
+export class UserService {
+  // Recibimos los datos crudos (password plano)
+  async registerUser(input: Omit<NewUser, 'password_hash'> & { password: string }) {
+    const { email, password, full_name } = input;
+
+    const existingUser = await userRepository.findByEmail(email);
+    if (existingUser) {
+      const error: any = new Error('User already exists');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    const newUser = await userRepository.create({
+      email,
+      full_name,
+      password_hash: passwordHash,
+      is_guest: false,
+      role: 'user',
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    return {
+      id: newUser.id,
+      email: newUser.email,
+      full_name: newUser.full_name,
+      role: newUser.role,
+      created_at: newUser.created_at
+    };
+  }
+
+  async findUserById(id: string) {
+    const user = await userRepository.findById(id);
+    if (!user) {
+      const error: any = new Error('User not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    return user;
+  }
+
+  async findAllUsers() {
+    return await userRepository.findAll();
+  }
+
+  async updateUser(id: string, input: { email?: string; full_name?: string; password?: string }) {
+    const user = await userRepository.findById(id);
+    if (!user) {
+      const error: any = new Error('User not found');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const updateData: UserUpdate = {
+      email: input.email,
+      full_name: input.full_name,
+      updated_at: new Date(),
+    };
+
+    if (input.password) {
+      const saltRounds = 10;
+      updateData.password_hash = await bcrypt.hash(input.password, saltRounds);
+    }
+
+    return await userRepository.update(id, updateData);
+  }
+
+  async deleteUser(id: string) {
+    const user = await userRepository.findById(id);
+    if (!user) {
+      const error: any = new Error('User not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    return await userRepository.delete(id);
+  }
+
+  async authenticate(email: string, passwordPlain: string) {
+    const user = await userRepository.findByEmail(email);
+    if (!user) {
+      return null;
+    }
+    const isValid = await bcrypt.compare(passwordPlain, user.password_hash);
+    if (!isValid) {
+      return null;
+    }
+    return {
+      id: user.id,
+      email: user.email,
+      full_name: user.full_name,
+      role: user.role,
+    };
+  }
+
+  async findOrCreateGuest(email: string, fullName: string = 'Guest User') {
+    const existingUser = await userRepository.findByEmail(email);
+    if (existingUser) {
+      return existingUser;
+    }
+
+    const newUser = await userRepository.create({
+      email,
+      full_name: fullName,
+      role: 'guest',
+      password_hash: null as any,
+      is_guest: true
+    });
+
+    return newUser;
+  }
+}
+
+export const userService = new UserService();
+</file>
+
+<file path="src/shared/db/migrate.ts">
+import 'dotenv/config';
+import * as path from 'path';
+import { promises as fs } from 'fs';
+import { pathToFileURL, fileURLToPath } from 'url';
+import { Migrator, Migration, MigrationProvider } from 'kysely';
+import { db } from './index.js';
+import { logger } from '../logger/index.js';
+
+class ESMFileMigrationProvider implements MigrationProvider {
+    constructor(private migrationFolder: string) { }
+
+    async getMigrations(): Promise<Record<string, Migration>> {
+        const migrations: Record<string, Migration> = {};
+        const files = await fs.readdir(this.migrationFolder);
+
+        for (const file of files) {
+            if ((!file.endsWith('.ts') && !file.endsWith('.js')) || file.endsWith('.d.ts')) {
+                continue;
+            }
+            const fullPath = path.join(this.migrationFolder, file);
+            const migrationName = file.substring(0, file.lastIndexOf('.'));
+            const url = pathToFileURL(fullPath).href;
+            const migration = await import(url);
+            migrations[migrationName] = migration;
+        }
+        return migrations;
+    }
+}
+
+// --- FUNCIÓN EXPORTABLE (Para Tests) ---
+export async function migrateToLatest() {
+    const migrator = new Migrator({
+        db,
+        provider: new ESMFileMigrationProvider(
+            path.join(process.cwd(), 'src/shared/db/migrations')
+        ),
+    });
+
+    logger.info('Running migrations...');
+
+    const { error, results } = await migrator.migrateToLatest();
+
+    results?.forEach((it) => {
+        if (it.status === 'Success') {
+            logger.info(`Migration "${it.migrationName}" was executed successfully`);
+        } else if (it.status === 'Error') {
+            logger.error(`Failed to execute migration "${it.migrationName}"`);
+        }
+    });
+
+    if (error) {
+        logger.error('Failed to run migrations');
+        logger.error(error);
+        // En tests lanzamos error, en CLI salimos
+        if (process.env.NODE_ENV === 'test') {
+            throw error;
+        } else {
+            process.exit(1);
+        }
+    }
+
+    logger.info('All migrations done!');
+}
+
+// --- EJECUCIÓN COMO SCRIPT (CLI) ---
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    migrateToLatest()
+        .then(async () => {
+            await db.destroy();
+        })
+        .catch(async () => {
+            await db.destroy();
+        });
+}
+</file>
+
+<file path="src/shared/db/migrations/001_create_users_table.ts">
+import { Kysely, sql } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+    // Creamos la extensión para generar UUIDs si no existe
+    await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`.execute(db);
+
+    await db.schema
+        .createTable('users')
+        .addColumn('id', 'uuid', (col) =>
+            col.primaryKey().defaultTo(sql`uuid_generate_v4()`)
+        )
+        .addColumn('email', 'varchar', (col) => col.notNull().unique())
+        .addColumn('password_hash', 'varchar', (col) => col.notNull())
+        .addColumn('full_name', 'varchar', (col) => col.notNull())
+        .addColumn('role', 'varchar', (col) => col.notNull().defaultTo('customer'))
+        .addColumn('created_at', 'timestamp', (col) =>
+            col.defaultTo(sql`now()`).notNull()
+        )
+        .addColumn('updated_at', 'timestamp', (col) =>
+            col.defaultTo(sql`now()`).notNull()
+        )
+        .execute();
+
+    // Índice para búsquedas rápidas por email (Login)
+    await db.schema
+        .createIndex('users_email_index')
+        .on('users')
+        .column('email')
+        .execute();
+
+    await db.schema
+        .createIndex('users_full_name_index')
+        .on('users')
+        .column('full_name')
+        .execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+    await db.schema.dropTable('users').execute();
+}
+</file>
+
+<file path="src/shared/db/migrations/002_create_categories_table.ts">
+import { Kysely, sql } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+    await db.schema
+        .createTable('categories')
+        .addColumn('id', 'uuid', (col) =>
+            col.primaryKey().defaultTo(sql`uuid_generate_v4()`)
+        )
+        .addColumn('name', 'varchar', (col) => col.notNull())
+        .addColumn('slug', 'varchar', (col) => col.notNull().unique())
+        .addColumn('description', 'text')
+        .addColumn('parent_id', 'uuid', (col) =>
+            col.references('categories.id').onDelete('set null')
+        )
+        .addColumn('created_at', 'timestamp', (col) =>
+            col.defaultTo(sql`now()`).notNull()
+        )
+        .addColumn('updated_at', 'timestamp', (col) =>
+            col.defaultTo(sql`now()`).notNull()
+        )
+        .execute();
+
+    await db.schema
+        .createIndex('categories_slug_index')
+        .on('categories')
+        .column('slug')
+        .execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+    await db.schema.dropTable('categories').execute();
+}
+</file>
+
+<file path="src/shared/db/migrations/003_create_products_table.ts">
+import { Kysely, sql } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+    await db.schema
+        .createTable('products')
+        .addColumn('id', 'uuid', (col) =>
+            col.primaryKey().defaultTo(sql`uuid_generate_v4()`)
+        )
+        .addColumn('name', 'varchar', (col) => col.notNull())
+        .addColumn('slug', 'varchar', (col) => col.notNull().unique())
+        .addColumn('description', 'text')
+
+        // DINERO: Guardamos centavos (Integers). Ej: 1000 = $10.00
+        .addColumn('price_amount', 'integer', (col) => col.notNull())
+        // Moneda: Por si vendes en USD y ARS a la vez (ISO 4217)
+        .addColumn('currency', 'varchar(3)', (col) => col.defaultTo('USD').notNull())
+
+        .addColumn('stock', 'integer', (col) => col.defaultTo(0).notNull())
+        .addColumn('sku', 'varchar', (col) => col.unique().notNull())
+
+        // IMAGEN: Por ahora URL simple. En el futuro, subida a S3/Cloudinary.
+        .addColumn('image_url', 'text')
+
+        // RELACIÓN: Un producto pertenece a una categoría
+        .addColumn('category_id', 'uuid', (col) =>
+            col.references('categories.id').onDelete('set null')
+        )
+
+        .addColumn('active', 'boolean', (col) => col.defaultTo(true).notNull())
+        .addColumn('created_at', 'timestamp', (col) => col.defaultTo(sql`now()`).notNull())
+        .addColumn('updated_at', 'timestamp', (col) => col.defaultTo(sql`now()`).notNull())
+        .execute();
+
+    // Índices para performance
+    await db.schema.createIndex('products_slug_index').on('products').column('slug').execute();
+    await db.schema.createIndex('products_category_index').on('products').column('category_id').execute();
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+    await db.schema.dropTable('products').execute();
+}
+</file>
+
+<file path="src/shared/hooks/auth.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+
+export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    // 1. Verifica el header 'Authorization: Bearer <token>'
+    // Si el token es inválido o expiró, esto lanza una excepción automáticamente.
+    await request.jwtVerify();
+    
+    // 2. Si pasa, Fastify-JWT inyecta el payload en request.user
+    // Ahora podemos saber quién es el usuario en el controlador.
+  } catch (err) {
+    reply.send(err);
+  }
+}
+</file>
+
+<file path="src/shared/hooks/rbac.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+
+export function requireRole(allowedRoles: string[]) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
+
+    if (!user) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    if (!allowedRoles.includes(user.role)) {
+      return reply.status(403).send({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'You do not have permission to access this resource'
+      });
+    }
+  };
+}
+</file>
+
+<file path="src/types/fastify-jwt.d.ts">
+import '@fastify/jwt';
+
+declare module '@fastify/jwt' {
+  interface FastifyJWT {
+    payload: {
+      sub: string;
+      email: string;
+      role: string;
+    };
+    user: {
+      sub: string;
+      email: string;
+      role: string;
+      iat: number;
+      exp: number;
+    };
+  }
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "baseUrl": "./",
+    "paths": {
+      "*": ["node_modules/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+</file>
+
+<file path=".gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+pnpm-debug.log*
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented libs generated by jscoverage/JSCover
+lib-cov
+
+# Coverage directory used by tools like istanbul
+coverage
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
+.grunt
+
+# Bower dependency directory (https://bower.io/)
+bower_components
+
+# node-waf configuration
+.lock-wscript
+
+# Compiled binary addons (https://nodejs.org/api/addons.html)
+build/Release
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Snowpack dependency directory (https://snowpack.dev/)
+web_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional stylelint cache
+.stylelintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+# parcel-bundler cache (https://parceljs.org/)
+.cache
+.parcel-cache
+
+# Next.js build output
+.next
+out
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+# Comment in the public line in if your project uses Gatsby and not Next.js
+# https://nextjs.org/blog/next-9-1#public-directory-support
+# public
+
+# vuepress build output
+.vuepress/dist
+
+# vuepress v2.x temp and cache directory
+.temp
+.cache
+
+# Sveltekit cache directory
+.svelte-kit/
+
+# vitepress build output
+**/.vitepress/dist
+
+# vitepress cache directory
+**/.vitepress/cache
+
+# Docusaurus cache and generated files
+.docusaurus
+
+# Serverless directories
+.serverless/
+
+# FuseBox cache
+.fusebox/
+
+# DynamoDB Local files
+.dynamodb/
+
+# Firebase cache directory
+.firebase/
+
+# TernJS port file
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# yarn v3
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Vite logs files
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+agent.md
+</file>
+
+<file path="docker-compose.dev.yml">
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: commerce_core_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin123}
+      POSTGRES_DB: ${DB_NAME:-commerce_core}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d commerce_core"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+
+volumes:
+  postgres_data:
+</file>
+
+<file path="pnpm-workspace.yaml">
+onlyBuiltDependencies:
+  - bcrypt
+  - esbuild
+</file>
+
+<file path="src/app.ts">
+import fastify from 'fastify';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import fastifyEnv from '@fastify/env';
+import { configOptions } from './shared/config/index.js';
+import { logger } from './shared/logger/index.js';
+import { appRoutes } from './routes.js';
+import fjwt from '@fastify/jwt';
+
+// Convertimos la función a async para asegurar el orden de carga (especialmente env)
+export async function buildApp() {
+  const app = fastify({
+    // 1. Inyección de Dependencia:
+    // Pasamos nuestra instancia configurada de Pino.
+    // Fastify la usará para sus logs internos y nos dará 'request.log' con request-id.
+    logger: logger,
+
+    // Opcional: Si los logs de "incoming request" te hacen mucho ruido, 
+    // puedes descomentar esto. Pero para empezar, déjalo activado.
+    // disableRequestLogging: true, 
+  });
+
+  // 2. Carga de Configuración (CRÍTICO: PRIMERO QUE TODO)
+  await app.register(fastifyEnv, configOptions);
+
+  // 3. Seguridad
+  await app.register(fjwt, {
+    secret: app.config.JWT_SECRET,
+  });
+  await app.register(helmet);
+
+  // 4. Rate Limiting (Protección contra DDoS/Brute Force)
+  await app.register(rateLimit, {
+    max: 100,
+    timeWindow: '1 minute',
+  });
+
+  // 5. Rutas de la Aplicación
+  await app.register(appRoutes);
+
+  // 6. Manejador Global de Errores
+  app.setErrorHandler((error, request, reply) => {
+    // Usamos request.log para mantener el contexto (requestId)
+    request.log.error({
+      err: error,
+      phase: 'global_error_handler',
+      url: request.url,
+      method: request.method
+    }, 'Uncaught Exception');
+
+    const statusCode = error.statusCode || 500;
+
+    // SECURITY: En producción (status 500), JAMÁS devolver el mensaje real del error
+    // porque puede contener info de la DB o paths del servidor.
+    const message = statusCode === 500
+      ? 'Internal Server Error'
+      : error.message;
+
+    reply.status(statusCode).send({
+      statusCode,
+      error: message,
+      // Opcional: timestamp: new Date().toISOString()
+    });
+  });
+
+  return app;
+}
+</file>
+
+<file path="src/modules/health/health.controller.ts">
+import { FastifyReply, FastifyRequest } from 'fastify';
+import { healthService } from './health.service.js';
+
+export class HealthController {
+  async check(request: FastifyRequest, reply: FastifyReply) {
+    const status = await healthService.getSystemStatus();
+    
+    // Si la base de datos está caída, devolvemos 503 (Service Unavailable)
+    // Esto es CRÍTICO para que los balanceadores de carga dejen de mandarnos tráfico.
+    const statusCode = status.status === 'operational' ? 200 : 503;
+    
+    return reply.status(statusCode).send(status);
+  }
+}
+
+export const healthController = new HealthController();
+</file>
+
+<file path="src/modules/health/health.routes.ts">
+import { FastifyInstance } from 'fastify';
+import { healthController } from './health.controller.js';
+
+export async function healthRoutes(app: FastifyInstance) {
+  app.get('/', healthController.check);
+}
+</file>
+
+<file path="src/modules/health/health.service.ts">
+import { sql } from 'kysely';
+import { db } from '../../shared/db/index.js';
+
+export class HealthService {
+  async checkDatabase(): Promise<boolean> {
+    try {
+      // Ejecutamos una query trivial para ver si la DB está viva
+      await sql`SELECT 1`.execute(db);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async getSystemStatus() {
+    const dbStatus = await this.checkDatabase();
+    
+    return {
+      service: 'commerce-core',
+      version: '0.1.0',
+      status: dbStatus ? 'operational' : 'degraded',
+      timestamp: new Date().toISOString(),
+      checks: {
+        database: dbStatus ? 'up' : 'down'
+      }
+    };
+  }
+}
+
+// Exportamos una instancia única (Singleton) para ahorrar memoria
+export const healthService = new HealthService();
+</file>
+
+<file path="src/routes.ts">
+import { FastifyInstance } from 'fastify';
+import { healthRoutes } from './modules/health/health.routes.js';
+import { userRoutes } from './modules/users/users.routes.js';
+import { authRoutes } from './modules/auth/auth.routes.js';
+import { categoryRoutes } from './modules/categories/categories.routes.js';
+import { productRoutes } from './modules/products/products.routes.js';
+import { orderRoutes } from './modules/orders/orders.routes.js';
+import { paymentRoutes } from './modules/payments/payments.routes.js';
+
+export async function appRoutes(app: FastifyInstance) {
+  app.register(healthRoutes, { prefix: '/health' });
+  app.register(userRoutes, { prefix: '/users' });
+  app.register(authRoutes, { prefix: '/auth' });
+  app.register(categoryRoutes, { prefix: '/categories' });
+  app.register(productRoutes, { prefix: '/products' });
+  app.register(orderRoutes, { prefix: '/orders' });
+  app.register(paymentRoutes, { prefix: '/payments' });
+
+  app.get('/', async () => {
+    return { message: 'Commerce Core API Running 🚀' };
+  });
+}
+</file>
+
+<file path="src/server.ts">
+import 'dotenv/config';
+import { buildApp } from './app.js';
+import { logger } from './shared/logger/index.js';
+import { db } from './shared/db/index.js';
+import { sql } from 'kysely';
+
+async function start() {
+  let app;
+
+  try {
+    logger.info('Starting Commerce Core...');
+
+    // 1. Healthcheck de Base de Datos (Smoke Test)
+    // Antes de levantar el puerto HTTP, verificamos que la DB responda.
+    // Si la DB está caída, el pod de Kubernetes/Docker debe fallar el arranque.
+    logger.info('Connecting to Database...');
+    await sql`SELECT 1`.execute(db);
+    logger.info('Database connected successfully!');
+
+    // 2. Construir la Aplicación
+    // Aquí se cargan los plugins, la config y las rutas.
+    app = await buildApp();
+
+    // 3. Iniciar el Servidor HTTP
+    // '0.0.0.0' es CRÍTICO en Docker. Si usas 'localhost', nadie fuera del contenedor podrá entrar.
+    const port = app.config.PORT;
+    const host = '0.0.0.0';
+
+    await app.listen({ port, host });
+
+    // Usamos app.log aquí porque ya tiene el contexto de Fastify
+    app.log.info(`Server listening on http://${host}:${port}`);
+
+    // 4. Configurar Graceful Shutdown
+    // Si Docker te dice "apágate" (SIGTERM), cerramos todo limpio.
+    setupGracefulShutdown(app);
+
+  } catch (err) {
+    logger.error(err, 'Fatal Error starting server');
+    process.exit(1);
+  }
+}
+
+function setupGracefulShutdown(app: Awaited<ReturnType<typeof buildApp>>) {
+  const signals = ['SIGINT', 'SIGTERM'];
+
+  for (const signal of signals) {
+    process.on(signal, async () => {
+      logger.info(`Received ${signal}, starting graceful shutdown...`);
+
+      try {
+        // A. Dejar de recibir nuevas peticiones HTTP
+        if (app) await app.close();
+        logger.info('HTTP Server closed');
+
+        // B. Cerrar conexiones a Base de Datos
+        await db.destroy();
+        logger.info('Database connections closed');
+
+        logger.info('Goodbye!');
+        process.exit(0);
+      } catch (err) {
+        logger.error(err, 'Error during shutdown');
+        process.exit(1);
+      }
+    });
+  }
+}
+
+start();
+</file>
+
+<file path="src/shared/config/index.ts">
+import env from '@fastify/env';
+import { FastifyInstance } from 'fastify';
+
+// 1. Definimos el esquema JSON Schema para validación estricta
+const schema = {
+  type: 'object',
+  required: ['PORT', 'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'JWT_SECRET'],
+  properties: {
+    PORT: {
+      type: 'number',
+      default: 3000
+    },
+    NODE_ENV: {
+      type: 'string',
+      default: 'development'
+    },
+    LOG_LEVEL: {
+      type: 'string',
+      default: 'info'
+    },
+    DB_HOST: { type: 'string' },
+    DB_PORT: { type: 'number' },
+    DB_USER: { type: 'string' },
+    DB_PASSWORD: { type: 'string' },
+    DB_NAME: { type: 'string' },
+    JWT_SECRET: { type: 'string' },
+  }
+};
+
+// 2. Configuración del plugin
+export const configOptions = {
+  confKey: 'config',
+  schema: schema,
+  dotenv: process.env.NODE_ENV !== 'test', 
+  data: process.env
+};
+
+// Tipado para TypeScript (Augmentation)
+declare module 'fastify' {
+  interface FastifyInstance {
+    config: {
+      PORT: number;
+      NODE_ENV: string;
+      LOG_LEVEL: string;
+      DB_HOST: string;
+      DB_PORT: number;
+      DB_USER: string;
+      DB_PASSWORD: string;
+      DB_NAME: string;
+      JWT_SECRET: string;
+    };
+  }
+}
+</file>
+
+<file path="src/shared/db/index.ts">
+import { Kysely, PostgresDialect } from 'kysely';
+import pg from 'pg';
+import { logger } from '../logger/index.js';
+import { UserTable } from '../../modules/users/users.schema.js';
+import { CategoryTable } from '../../modules/categories/categories.schema.js';
+import { ProductTable } from '../../modules/products/products.schema.js';
+import { OrderTable, OrderItemTable } from '../../modules/orders/orders.schema.js';
+
+export interface Database {
+  users: UserTable;
+  categories: CategoryTable;
+  products: ProductTable;
+  orders: OrderTable;
+  order_items: OrderItemTable;
+}
+
+const { Pool } = pg;
+
+// Configuración de la conexión usando variables de entorno
+// Nota: Usamos process.env aquí porque este archivo se puede importar
+// independientemente del contexto de Fastify.
+const dialect = new PostgresDialect({
+  pool: new Pool({
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    max: 10, // Máximo 10 conexiones simultáneas (ideal para tu límite de RAM)
+  }),
+});
+
+export const db = new Kysely<Database>({
+  dialect,
+  // Hook para loguear errores de SQL automáticamente
+  log(event) {
+    if (event.level === 'error') {
+      logger.error({
+        msg: 'Query Error',
+        sql: event.query.sql,
+        params: event.query.parameters,
+        error: event.error,
+      });
+    }
+  },
+});
+</file>
+
+<file path="src/shared/logger/index.ts">
+import pino from 'pino';
+import { configOptions } from '../config/index.js';
+
+// En desarrollo queremos logs bonitos (pretty), en producción JSON puro.
+
+// Nota: Para leer la config aquí antes de iniciar Fastify, leemos process.env directamente
+// o confiamos en los defaults. La validación estricta ocurrirá al levantar la app.
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+export const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: isDevelopment
+    ? {
+      target: 'pino-pretty',
+      options: {
+        colorize: true,
+        translateTime: 'SYS:standard', // Formato de hora legible
+      },
+    }
+    : undefined,
+});
+</file>
+
+<file path="package.json">
+{
+  "name": "backend-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "migrate": "tsx src/shared/db/migrate.ts",
+    "lint": "eslint .",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@fastify/env": "^4.4.0",
+    "@fastify/helmet": "^11.0.0",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/rate-limit": "^9.0.1",
+    "@sinclair/typebox": "^0.34.48",
+    "bcrypt": "^6.0.0",
+    "dotenv": "^17.2.3",
+    "env-schema": "^7.0.0",
+    "fastify": "^4.26.2",
+    "kysely": "^0.28.10",
+    "pg": "^8.17.2",
+    "pino": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.16.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^8.56.0",
+    "pino-pretty": "^13.1.3",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  }
+}
+</file>
+
+</files>

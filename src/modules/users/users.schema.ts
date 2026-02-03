@@ -8,6 +8,7 @@ export interface UserTable {
   role: Generated<string>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+  is_guest: boolean;
 }
 
 // Tipos auxiliares para usar en el código

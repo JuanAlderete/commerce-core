@@ -1,4 +1,4 @@
-import { Type } from '@sinclair/typebox';
+import { Type, Static } from '@sinclair/typebox';
 
 // Definimos el patrón exacto de un UUID v4
 const UUID_PATTERN = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
@@ -13,3 +13,5 @@ export const CreateProductSchema = Type.Object({
     categoryId: Type.String({ pattern: UUID_PATTERN }),
     imageUrl: Type.Optional(Type.String({ format: 'uri' }))
 });
+
+export type CreateProductBody = Static<typeof CreateProductSchema>;

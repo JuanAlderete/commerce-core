@@ -1,13 +1,10 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { productRepository } from './products.repository.js';
 import { categoryRepository } from '../categories/categories.repository.js';
-import { Static } from '@sinclair/typebox';
-import { CreateProductSchema } from './products.dto.js';
-
-export type CreateProductBody = Static<typeof CreateProductSchema>;
+import { CreateProductBody } from './products.dto.js';
 
 export class ProductController {
-    async create(request: FastifyRequest<{ Body: typeof CreateProductSchema }>, reply: FastifyReply) {
+    async create(request: FastifyRequest<{ Body: CreateProductBody }>, reply: FastifyReply) {
         const { name, slug, description, price, stock, sku, categoryId, imageUrl } = request.body;
 
         // 1. Validar que la categoría exista (Integridad Referencial)
