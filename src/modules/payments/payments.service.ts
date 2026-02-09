@@ -1,5 +1,6 @@
 import { orderRepository } from '../orders/orders.repository.js';
 import { paymentProvider } from '../../shared/providers/payment/mock.provider.js';
+import { eventBus } from '../../shared/events/event-bus.js';
 
 export class PaymentService {
     async processOrderPayment(orderId: string, userId?: string) {
@@ -41,6 +42,17 @@ export class PaymentService {
 
         // 6. Éxito: Actualizar DB
         await orderRepository.updateStatus(order.id, 'paid');
+
+        // NUEVO: Emitir evento (Fire & Forget)
+        // Buscamos el email del usuario si es guest (o lo pasamos si lo tenemos)
+        // Para simplificar, asumimos que si es user registrado, el listener lo busca.
+        // Si es guest, deberíamos haber guardado el email en la orden o user sombra.
+        // Por ahora, emitimos lo básico.
+        eventBus.emit('order.paid', {
+            orderId: order.id,
+            userId: order.user_id, // Puede ser el ID del usuario sombra
+            total: order.total_amount
+        });
 
         return {
             status: 'paid',

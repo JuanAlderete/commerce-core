@@ -176,4 +176,49 @@ describe('Payments Module', () => {
         expect(response.statusCode).toBe(400); // Bad Request
         expect(response.json().error).toMatch(/already paid/i);
     });
+
+    it('debería ser idempotente (no cobrar dos veces con la misma key)', async () => {
+        const orderId = await createOrder(userId);
+        const idempotencyKey = crypto.randomUUID(); // Clave única para este intento
+
+        // 1. PRIMER INTENTO (Debe procesar y tardar ~500ms por el mock)
+        const start1 = Date.now();
+        const response1 = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: {
+                Authorization: `Bearer ${userToken}`,
+                'Idempotency-Key': idempotencyKey
+            },
+            payload: { orderId }
+        });
+        const duration1 = Date.now() - start1;
+
+        expect(response1.statusCode).toBe(200);
+        expect(response1.json().status).toBe('paid');
+        expect(duration1).toBeGreaterThan(400); // Confirmamos que el mock corrió
+
+        // 2. SEGUNDO INTENTO (Debe ser instantáneo y devolver lo mismo)
+        const start2 = Date.now();
+        const response2 = await app.inject({
+            method: 'POST',
+            url: '/payments/pay',
+            headers: {
+                Authorization: `Bearer ${userToken}`,
+                'Idempotency-Key': idempotencyKey // ¡MISMA CLAVE!
+            },
+            payload: { orderId }
+        });
+        const duration2 = Date.now() - start2;
+
+        // Validaciones Clave:
+        expect(response2.statusCode).toBe(200);
+        expect(response2.headers['x-idempotency-hit']).toBe('true'); // Header de debug
+
+        // ¡CRÍTICO! Debe ser mucho más rápido porque no llamó al proveedor
+        expect(duration2).toBeLessThan(200);
+
+        // Las respuestas deben ser idénticas
+        expect(response2.json()).toEqual(response1.json());
+    });
 });

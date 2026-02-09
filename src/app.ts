@@ -6,6 +6,7 @@ import { configOptions } from './shared/config/index.js';
 import { logger } from './shared/logger/index.js';
 import { appRoutes } from './routes.js';
 import fjwt from '@fastify/jwt';
+import { setupNotificationListeners } from './modules/notifications/notification.listeners.js';
 
 // Convertimos la función a async para asegurar el orden de carga (especialmente env)
 export async function buildApp() {
@@ -38,7 +39,10 @@ export async function buildApp() {
   // 5. Rutas de la Aplicación
   await app.register(appRoutes);
 
-  // 6. Manejador Global de Errores
+  // 6. Inicializar Listeners de Eventos
+  setupNotificationListeners();
+
+  // 7. Manejador Global de Errores
   app.setErrorHandler((error, request, reply) => {
     // Usamos request.log para mantener el contexto (requestId)
     request.log.error({

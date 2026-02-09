@@ -5,6 +5,7 @@ import { UserTable } from '../../modules/users/users.schema.js';
 import { CategoryTable } from '../../modules/categories/categories.schema.js';
 import { ProductTable } from '../../modules/products/products.schema.js';
 import { OrderTable, OrderItemTable } from '../../modules/orders/orders.schema.js';
+import { IdempotencyKeyTable } from '../types/idempotency.schema.js';
 
 export interface Database {
   users: UserTable;
@@ -12,6 +13,7 @@ export interface Database {
   products: ProductTable;
   orders: OrderTable;
   order_items: OrderItemTable;
+  idempotency_keys: IdempotencyKeyTable;
 }
 
 const { Pool } = pg;
